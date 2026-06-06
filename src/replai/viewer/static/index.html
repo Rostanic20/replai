@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>replai</title>
+<style>
+  :root {
+    --bg: #0e0f13; --panel: #16181f; --line: #262932; --text: #e6e8ee;
+    --muted: #8b909e; --accent: #6ea8fe; --llm: #b07cff; --tool: #59c19a; --fn: #d6975a;
+    --err: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+         background: var(--bg); color: var(--text); height: 100vh; display: flex; }
+  #sidebar { width: 280px; border-right: 1px solid var(--line); overflow-y: auto; flex: none; }
+  #main { flex: 1; display: flex; min-width: 0; }
+  #timeline { flex: 1; overflow-y: auto; padding: 14px; min-width: 0; }
+  #detail { width: 42%; border-left: 1px solid var(--line); overflow-y: auto; padding: 14px;
+            background: var(--panel); }
+  h1 { font-size: 15px; margin: 0; padding: 14px; border-bottom: 1px solid var(--line);
+       letter-spacing: .5px; }
+  h1 span { color: var(--accent); }
+  .run { padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .run:hover { background: var(--panel); }
+  .run.active { background: var(--panel); border-left: 2px solid var(--accent); }
+  .run .name { font-weight: 600; }
+  .run .meta { color: var(--muted); font-size: 12px; }
+  .span { padding: 7px 10px; margin: 3px 0; border-radius: 6px; cursor: pointer;
+          background: var(--panel); border: 1px solid transparent; display: flex; gap: 8px;
+          align-items: center; }
+  .span:hover { border-color: var(--line); }
+  .span.active { border-color: var(--accent); }
+  .badge { font-size: 10px; text-transform: uppercase; padding: 1px 6px; border-radius: 4px;
+           font-weight: 700; letter-spacing: .5px; flex: none; }
+  .badge.llm_call { background: rgba(176,124,255,.18); color: var(--llm); }
+  .badge.tool_call { background: rgba(89,193,154,.18); color: var(--tool); }
+  .badge.function { background: rgba(214,151,90,.18); color: var(--fn); }
+  .span .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .span .dur { color: var(--muted); font-size: 12px; flex: none; }
+  .span.err .label { color: var(--err); }
+  .empty { color: var(--muted); padding: 40px 14px; text-align: center; }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px;
+        overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+  .k { color: var(--muted); font-size: 12px; margin: 14px 0 4px; text-transform: uppercase;
+       letter-spacing: .5px; }
+  .pill { display: inline-block; background: var(--bg); border: 1px solid var(--line);
+          border-radius: 4px; padding: 1px 7px; margin-right: 6px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <div id="sidebar"><h1>repl<span>ai</span></h1><div id="runs"></div></div>
+  <div id="main">
+    <div id="timeline"><div class="empty">Select a run.</div></div>
+    <div id="detail"><div class="empty">Select a step.</div></div>
+  </div>
+<script>
+const $ = s => document.querySelector(s);
+let activeRun = null, activeSpan = null;
+
+async function loadRuns() {
+  const runs = await (await fetch('/api/runs')).json();
+  const el = $('#runs');
+  if (!runs.length) { el.innerHTML = '<div class="empty">No runs yet.<br>Run your agent, then refresh.</div>'; return; }
+  el.innerHTML = '';
+  for (const r of runs) {
+    const d = document.createElement('div');
+    d.className = 'run' + (r.id === activeRun ? ' active' : '');
+    const when = r.start ? new Date(r.start * 1000).toLocaleString() : '';
+    d.innerHTML = `<div class="name">${esc(r.name)}</div><div class="meta">${esc(r.id)} · ${when}</div>`;
+    d.onclick = () => loadRun(r.id);
+    el.appendChild(d);
+  }
+}
+
+async function loadRun(id) {
+  activeRun = id; activeSpan = null;
+  await loadRuns();
+  const { spans } = await (await fetch('/api/runs/' + id)).json();
+  const tl = $('#timeline');
+  $('#detail').innerHTML = '<div class="empty">Select a step.</div>';
+  if (!spans.length) { tl.innerHTML = '<div class="empty">No steps recorded.</div>'; return; }
+  const byParent = {};
+  for (const s of spans) (byParent[s.parent_id] = byParent[s.parent_id] || []).push(s);
+  tl.innerHTML = '';
+  render(byParent, null, 0, tl, spans);
+}
+
+function render(byParent, parent, depth, container, all) {
+  for (const s of (byParent[parent] || [])) {
+    const row = document.createElement('div');
+    row.className = 'span ' + (s.error ? 'err' : '') + (s.id === activeSpan ? ' active' : '');
+    row.style.marginLeft = (depth * 18) + 'px';
+    const dur = s.duration_ms != null ? s.duration_ms + 'ms' : '';
+    row.innerHTML = `<span class="badge ${s.type}">${s.type.replace('_call','')}</span>`
+      + `<span class="label">${esc(s.name)}</span><span class="dur">${dur}</span>`;
+    row.onclick = () => showDetail(s, row);
+    container.appendChild(row);
+    render(byParent, s.id, depth + 1, container, all);
+  }
+}
+
+function showDetail(s, row) {
+  activeSpan = s.id;
+  document.querySelectorAll('.span.active').forEach(e => e.classList.remove('active'));
+  if (row) row.classList.add('active');
+  const d = $('#detail');
+  const tokens = (s.tokens_in != null || s.tokens_out != null)
+    ? `<span class="pill">in ${s.tokens_in ?? '?'}</span><span class="pill">out ${s.tokens_out ?? '?'}</span>` : '';
+  d.innerHTML =
+    `<div><span class="badge ${s.type}">${s.type.replace('_call','')}</span> <b>${esc(s.name)}</b></div>`
+    + (s.model ? `<div class="k">model</div><span class="pill">${esc(s.model)}</span>` : '')
+    + (tokens ? `<div class="k">tokens</div>${tokens}` : '')
+    + (s.duration_ms != null ? `<div class="k">duration</div><span class="pill">${s.duration_ms} ms</span>` : '')
+    + (s.error ? `<div class="k">error</div><pre style="color:var(--err)">${esc(s.error)}</pre>` : '')
+    + `<div class="k">input</div><pre>${esc(fmt(s.input))}</pre>`
+    + `<div class="k">output</div><pre>${esc(fmt(s.output))}</pre>`;
+}
+
+const fmt = v => v == null ? '—' : (typeof v === 'string' ? v : JSON.stringify(v, null, 2));
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+loadRuns();
+setInterval(() => { if (!activeRun) loadRuns(); }, 3000);
+</script>
+</body>
+</html>
