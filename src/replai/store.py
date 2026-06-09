@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS spans (
     model TEXT,
     tokens_in INTEGER,
     tokens_out INTEGER,
-    metadata TEXT
+    metadata TEXT,
+    raw TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_spans_run ON spans(run_id);
 """
@@ -58,7 +59,13 @@ class Store:
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(spans)")}
+        if "raw" not in cols:
+            self._conn.execute("ALTER TABLE spans ADD COLUMN raw TEXT")
 
     def save_run(self, run: Run) -> None:
         with self._lock:
@@ -71,16 +78,17 @@ class Store:
     def save_span(self, span: Span) -> None:
         inp = self._apply_redact(span.input)
         out = self._apply_redact(span.output)
+        raw = self._apply_redact(span.raw)
         with self._lock:
             self._conn.execute(
                 """INSERT OR REPLACE INTO spans
                    (id, run_id, parent_id, name, type, start, end,
-                    input, output, error, model, tokens_in, tokens_out, metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    input, output, error, model, tokens_in, tokens_out, metadata, raw)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     span.id, span.run_id, span.parent_id, span.name, span.type, span.start, span.end,
                     _enc(inp), _enc(out), span.error, span.model,
-                    span.tokens_in, span.tokens_out, _enc(span.metadata),
+                    span.tokens_in, span.tokens_out, _enc(span.metadata), _enc(raw),
                 ),
             )
             self._conn.commit()
@@ -103,7 +111,7 @@ class Store:
             row = self._conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return dict(row) if row else None
 
-    def spans(self, run_id: str) -> list[dict]:
+    def spans(self, run_id: str, with_raw: bool = False) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM spans WHERE run_id = ? ORDER BY start", (run_id,)
@@ -114,6 +122,10 @@ class Store:
             span["input"] = _dec(span["input"])
             span["output"] = _dec(span["output"])
             span["metadata"] = _dec(span["metadata"])
+            if with_raw:
+                span["raw"] = _dec(span["raw"])
+            else:
+                span.pop("raw", None)  # large SDK dump — only replay needs it
             span["duration_ms"] = (
                 round((span["end"] - span["start"]) * 1000, 1) if span["end"] else None
             )

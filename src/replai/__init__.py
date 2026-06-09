@@ -8,6 +8,7 @@ import contextlib
 import functools
 import inspect
 import time
+from collections import deque
 from typing import Any, Optional
 
 from . import context as _ctx
@@ -15,7 +16,7 @@ from .models import Run, Span
 from .store import Store
 
 __version__ = "0.1.0"
-__all__ = ["init", "run", "span", "trace", "tool", "record_llm_call",
+__all__ = ["init", "run", "span", "trace", "tool", "record_llm_call", "replay",
            "redact_keys", "Store", "Run", "Span"]
 
 
@@ -73,14 +74,23 @@ def span(name: str, type: str = "function", input: Any = None, **metadata):
 
 
 def trace(fn=None, *, name: Optional[str] = None, type: str = "function"):
-    """Decorator that records a function call as a span (sync or async)."""
+    """Decorator that records a function call as a span (sync or async).
+
+    Under replay() a recorded call is played back instead of executed.
+    """
     def deco(f):
         span_name = name or getattr(f, "__name__", "fn")
 
         if inspect.iscoroutinefunction(f):
             @functools.wraps(f)
             async def awrapper(*args, **kwargs):
-                with span(span_name, type=type, input={"args": args, "kwargs": kwargs}) as s:
+                inp = {"args": args, "kwargs": kwargs}
+                action, rec = _ctx.replay_lookup(span_name, type)
+                if action == "play":
+                    return _replay_emit(span_name, type, rec, inp)
+                if action == "raise":
+                    _replay_raise(span_name, type)
+                with span(span_name, type=type, input=inp) as s:
                     out = await f(*args, **kwargs)
                     s.output = out
                     return out
@@ -88,7 +98,13 @@ def trace(fn=None, *, name: Optional[str] = None, type: str = "function"):
 
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
-            with span(span_name, type=type, input={"args": args, "kwargs": kwargs}) as s:
+            inp = {"args": args, "kwargs": kwargs}
+            action, rec = _ctx.replay_lookup(span_name, type)
+            if action == "play":
+                return _replay_emit(span_name, type, rec, inp)
+            if action == "raise":
+                _replay_raise(span_name, type)
+            with span(span_name, type=type, input=inp) as s:
                 out = f(*args, **kwargs)
                 s.output = out
                 return out
@@ -100,6 +116,51 @@ def trace(fn=None, *, name: Optional[str] = None, type: str = "function"):
 def tool(fn=None, *, name: Optional[str] = None):
     """Decorator for tool calls — same as @trace but tagged as a tool."""
     return trace(fn, name=name, type="tool_call")
+
+
+@contextlib.contextmanager
+def replay(run_id: str, live=None):
+    """Re-run your agent against a recorded run, played back step by step.
+
+    Instrumented LLM calls and @tool/@trace calls return their recorded results
+    instead of executing — deterministic, no network, no token cost. The replay
+    is captured as a new run (diff it against the original to see what changed).
+
+    live: a set of span types ("llm_call", "tool_call", "function") to run for
+    real instead of playing back. A call with no recorded match (and not in
+    `live`) raises rather than silently going live.
+    """
+    store = _ctx.get_store()
+    spans = store.spans(run_id, with_raw=True)
+    if not spans and store.run(run_id) is None:
+        raise ValueError(f"No run found: {run_id}")
+    queues: dict = {}
+    for s in spans:
+        queues.setdefault((s["name"], s["type"]), deque()).append(s)
+    replay_token = _ctx.enter_replay(_ctx.Replay(queues, set(live or ())))
+
+    r = Run(name=f"replay:{run_id[:8]}", metadata={"replay_of": run_id})
+    store.save_run(r)
+    run_token = _ctx.enter_run(r)
+    try:
+        yield r
+    finally:
+        r.end = time.time()
+        store.save_run(r)
+        _ctx.exit_run(run_token)
+        _ctx.exit_replay(replay_token)
+
+
+def _replay_emit(name: str, type: str, rec: dict, input: Any) -> Any:
+    _ctx.record_span(name, type, input=input, output=rec["output"])
+    return rec["output"]
+
+
+def _replay_raise(name: str, type: str) -> None:
+    raise RuntimeError(
+        f"replay: no recorded response for {type} '{name}'. "
+        f"Pass live={{'{type}'}} to run it live."
+    )
 
 
 def redact_keys(*keys: str, mask: str = "***"):

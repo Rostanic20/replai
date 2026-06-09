@@ -114,7 +114,7 @@ def test_sync_non_streaming(tmp_path):
         def create(self, **kwargs):
             return _anthropic_response()
 
-    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum)
+    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum, I._reconstruct_anthropic)
 
     with replai.run("t") as r:
         Messages().create(model="claude", messages=[{"role": "user", "content": "hey"}])
@@ -136,7 +136,7 @@ def test_async_non_streaming(tmp_path):
             return _openai_response()
 
     I._patch(AsyncCompletions, "create", "openai.chat.completions.create",
-             I._extract_openai, I._OpenAIAccum)
+             I._extract_openai, I._OpenAIAccum, I._reconstruct_openai)
 
     async def go():
         with replai.run("t") as r:
@@ -160,7 +160,7 @@ def test_sync_streaming_accumulates(tmp_path):
         def create(self, **kwargs):
             return _anthropic_stream_events()
 
-    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum)
+    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum, I._reconstruct_anthropic)
 
     with replai.run("t") as r:
         stream = Messages().create(model="claude", stream=True, messages=[{"role": "user", "content": "hey"}])
@@ -181,7 +181,7 @@ def test_async_streaming_accumulates(tmp_path):
             return _AsyncIter(_openai_stream_chunks())
 
     I._patch(AsyncCompletions, "create", "openai.chat.completions.create",
-             I._extract_openai, I._OpenAIAccum)
+             I._extract_openai, I._OpenAIAccum, I._reconstruct_openai)
 
     async def go():
         with replai.run("t") as r:
@@ -205,9 +205,9 @@ def test_double_patch_is_noop(tmp_path):
         def create(self, **kwargs):
             return _anthropic_response()
 
-    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum)
+    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum, I._reconstruct_anthropic)
     first = Messages.create
-    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum)
+    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum, I._reconstruct_anthropic)
     assert Messages.create is first  # not re-wrapped
 
     with replai.run("t") as r:
@@ -224,7 +224,7 @@ def test_anthropic_tool_call_non_streaming(tmp_path):
         def create(self, **kwargs):
             return _anthropic_tool_response()
 
-    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum)
+    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum, I._reconstruct_anthropic)
 
     with replai.run("t") as r:
         Messages().create(model="claude", messages=[])
@@ -241,7 +241,7 @@ def test_anthropic_tool_call_streaming(tmp_path):
         def create(self, **kwargs):
             return _anthropic_tool_stream_events()
 
-    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum)
+    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum, I._reconstruct_anthropic)
 
     with replai.run("t") as r:
         list(Messages().create(model="claude", stream=True, messages=[]))
@@ -258,7 +258,7 @@ def test_openai_tool_call_non_streaming(tmp_path):
         def create(self, **kwargs):
             return _openai_tool_response()
 
-    I._patch(Completions, "create", "openai.chat.completions.create", I._extract_openai, I._OpenAIAccum)
+    I._patch(Completions, "create", "openai.chat.completions.create", I._extract_openai, I._OpenAIAccum, I._reconstruct_openai)
 
     with replai.run("t") as r:
         Completions().create(model="gpt", messages=[])
@@ -275,7 +275,7 @@ def test_openai_tool_call_streaming(tmp_path):
         def create(self, **kwargs):
             return _openai_tool_stream_chunks()
 
-    I._patch(Completions, "create", "openai.chat.completions.create", I._extract_openai, I._OpenAIAccum)
+    I._patch(Completions, "create", "openai.chat.completions.create", I._extract_openai, I._OpenAIAccum, I._reconstruct_openai)
 
     with replai.run("t") as r:
         list(Completions().create(model="gpt", stream=True, messages=[]))
@@ -295,7 +295,7 @@ def test_duration_reflects_call_latency(tmp_path):
             time.sleep(0.02)
             return _anthropic_response()
 
-    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum)
+    I._patch(Messages, "create", "anthropic.messages.create", I._extract_anthropic, I._AnthropicAccum, I._reconstruct_anthropic)
 
     with replai.run("t") as r:
         Messages().create(model="claude", messages=[])

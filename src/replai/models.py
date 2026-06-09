@@ -30,6 +30,7 @@ class Span:
     tokens_in: Optional[int] = None
     tokens_out: Optional[int] = None
     metadata: dict = field(default_factory=dict)
+    raw: Any = None  # serialized SDK response, kept for replay
 
     @property
     def duration_ms(self) -> Optional[float]:
