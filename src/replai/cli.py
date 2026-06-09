@@ -22,6 +22,11 @@ def main(argv=None) -> None:
     diff.add_argument("run_b")
     diff.add_argument("--db", default=None)
 
+    export = sub.add_parser("export", help="Export a run as OpenTelemetry OTLP/JSON")
+    export.add_argument("run_id")
+    export.add_argument("--db", default=None)
+    export.add_argument("--out", default=None, help="Write to a file instead of stdout")
+
     sub.add_parser("version", help="Show the installed version")
 
     args = parser.parse_args(argv)
@@ -32,6 +37,8 @@ def main(argv=None) -> None:
         _list_runs()
     elif args.command == "diff":
         _diff(args.run_a, args.run_b, args.db)
+    elif args.command == "export":
+        _export(args.run_id, args.db, args.out)
     elif args.command == "version":
         from . import __version__
         print(__version__)
@@ -85,6 +92,23 @@ def _diff(run_a: str, run_b: str, db) -> None:
           f"tokens_in {sa['tokens_in']}->{sb['tokens_in']}   "
           f"tokens_out {sa['tokens_out']}->{sb['tokens_out']}   "
           f"errors {sa['errors']}->{sb['errors']}")
+
+
+def _export(run_id: str, db, out) -> None:
+    import json
+    from pathlib import Path
+    from .export import to_otlp
+    from .store import Store
+    store = Store(db)
+    run = store.run(run_id)
+    if not run:
+        raise SystemExit(f"No run found: {run_id}")
+    text = json.dumps(to_otlp(run, store.spans(run_id)), indent=2)
+    if out:
+        Path(out).write_text(text)
+        print(f"wrote {out}")
+    else:
+        print(text)
 
 
 def _short(value, limit: int = 60) -> str:
