@@ -15,16 +15,19 @@ from .models import Run, Span
 from .store import Store
 
 __version__ = "0.1.0"
-__all__ = ["init", "run", "span", "trace", "tool", "record_llm_call", "Store", "Run", "Span"]
+__all__ = ["init", "run", "span", "trace", "tool", "record_llm_call",
+           "redact_keys", "Store", "Run", "Span"]
 
 
-def init(db: Optional[str] = None, instrument: bool = True) -> Store:
+def init(db: Optional[str] = None, instrument: bool = True, redact=None) -> Store:
     """Set up replai. Call once at startup.
 
     db: path to the local SQLite file (defaults to ~/.replai/replai.db).
     instrument: auto-capture Anthropic & OpenAI client calls.
+    redact: optional callable applied to each span's input and output before
+        they're written to disk. Use replai.redact_keys(...) or your own.
     """
-    store = Store(db)
+    store = Store(db, redact=redact)
     _ctx.set_store(store)
     if instrument:
         from .instrument import instrument as _do_instrument
@@ -97,6 +100,23 @@ def trace(fn=None, *, name: Optional[str] = None, type: str = "function"):
 def tool(fn=None, *, name: Optional[str] = None):
     """Decorator for tool calls — same as @trace but tagged as a tool."""
     return trace(fn, name=name, type="tool_call")
+
+
+def redact_keys(*keys: str, mask: str = "***"):
+    """Build a redactor that replaces values under the given dict keys.
+
+    Recurses through nested dicts and lists. Pass to replai.init(redact=...).
+    """
+    keyset = set(keys)
+
+    def scrub(value):
+        if isinstance(value, dict):
+            return {k: (mask if k in keyset else scrub(v)) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [scrub(v) for v in value]
+        return value
+
+    return scrub
 
 
 def record_llm_call(model: str, input: Any, output: Any, *,
