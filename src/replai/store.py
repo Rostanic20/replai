@@ -50,9 +50,10 @@ def _dec(value):
 
 
 class Store:
-    def __init__(self, path: Optional[str | Path] = None):
+    def __init__(self, path: Optional[str | Path] = None, redact=None):
         self.path = Path(path) if path else DEFAULT_DB
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._redact = redact
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -68,6 +69,8 @@ class Store:
             self._conn.commit()
 
     def save_span(self, span: Span) -> None:
+        inp = self._apply_redact(span.input)
+        out = self._apply_redact(span.output)
         with self._lock:
             self._conn.execute(
                 """INSERT OR REPLACE INTO spans
@@ -76,11 +79,19 @@ class Store:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     span.id, span.run_id, span.parent_id, span.name, span.type, span.start, span.end,
-                    _enc(span.input), _enc(span.output), span.error, span.model,
+                    _enc(inp), _enc(out), span.error, span.model,
                     span.tokens_in, span.tokens_out, _enc(span.metadata),
                 ),
             )
             self._conn.commit()
+
+    def _apply_redact(self, value):
+        if self._redact is None:
+            return value
+        try:
+            return self._redact(value)
+        except Exception:
+            return "<redaction failed>"  # fail closed — never persist the raw value
 
     def runs(self) -> list[dict]:
         with self._lock:
