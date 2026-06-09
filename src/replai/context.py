@@ -10,6 +10,7 @@ from .store import Store
 _store: Optional[Store] = None
 _current_run: contextvars.ContextVar = contextvars.ContextVar("replai_run", default=None)
 _span_stack: contextvars.ContextVar = contextvars.ContextVar("replai_span_stack", default=())
+_replay: contextvars.ContextVar = contextvars.ContextVar("replai_replay", default=None)
 _last_run: Optional[Run] = None  # cross-thread fallback (ContextVars don't cross threads)
 
 
@@ -81,3 +82,37 @@ def record_span(name: str, type: str, start: Optional[float] = None, **fields) -
     span.end = time.time()
     get_store().save_span(span)
     return span
+
+
+# --- replay ---------------------------------------------------------------
+
+class Replay:
+    """Playback source for a replayed run: recorded spans queued per (name, type)."""
+
+    def __init__(self, queues: dict, live: set):
+        self.queues = queues
+        self.live = live
+
+
+def enter_replay(replay: "Replay"):
+    return _replay.set(replay)
+
+
+def exit_replay(token) -> None:
+    _replay.reset(token)
+
+
+def replay_lookup(name: str, type: str):
+    """Decide what a call should do under replay.
+
+    Returns ("run", None) to execute normally, ("play", recorded_span) to play
+    back a recorded result, or ("raise", None) when there's no recording and the
+    type isn't allowed to run live.
+    """
+    replay = _replay.get()
+    if replay is None or type in replay.live:
+        return ("run", None)
+    queue = replay.queues.get((name, type))
+    if queue:
+        return ("play", queue.popleft())
+    return ("raise", None)

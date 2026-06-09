@@ -88,6 +88,26 @@ def test_concurrent_writes(tmp_path):
     assert len(store.spans(run.id)) == 160
 
 
+def test_migration_adds_raw_column(tmp_path):
+    import sqlite3
+    db = str(tmp_path / "old.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """CREATE TABLE runs (id TEXT PRIMARY KEY, name TEXT, start REAL, end REAL, metadata TEXT);
+           CREATE TABLE spans (id TEXT PRIMARY KEY, run_id TEXT, parent_id TEXT, name TEXT,
+             type TEXT, start REAL, end REAL, input TEXT, output TEXT, error TEXT, model TEXT,
+             tokens_in INTEGER, tokens_out INTEGER, metadata TEXT);"""
+    )
+    conn.commit()
+    conn.close()
+
+    store = Store(db)  # should ALTER TABLE to add the raw column
+    run = Run(name="x")
+    store.save_run(run)
+    store.save_span(Span(run_id=run.id, name="s", type="llm_call", raw={"k": 1}))
+    assert store.spans(run.id, with_raw=True)[0]["raw"] == {"k": 1}
+
+
 def test_span_in_worker_thread_attaches_to_open_run(tmp_path):
     db = str(tmp_path / "wt.db")
     replai.init(db=db, instrument=False)

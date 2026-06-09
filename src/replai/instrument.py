@@ -32,7 +32,8 @@ def _patch_anthropic() -> None:
     except Exception:
         return
     for cls in (Messages, AsyncMessages):
-        _patch(cls, "create", "anthropic.messages.create", _extract_anthropic, _AnthropicAccum)
+        _patch(cls, "create", "anthropic.messages.create",
+               _extract_anthropic, _AnthropicAccum, _reconstruct_anthropic)
 
 
 def _patch_openai() -> None:
@@ -41,10 +42,11 @@ def _patch_openai() -> None:
     except Exception:
         return
     for cls in (Completions, AsyncCompletions):
-        _patch(cls, "create", "openai.chat.completions.create", _extract_openai, _OpenAIAccum)
+        _patch(cls, "create", "openai.chat.completions.create",
+               _extract_openai, _OpenAIAccum, _reconstruct_openai)
 
 
-def _patch(cls, attr: str, name: str, extract, make_accum) -> None:
+def _patch(cls, attr: str, name: str, extract, make_accum, reconstruct) -> None:
     """Wrap cls.attr so each call is recorded. Handles sync/async + streaming."""
     original = getattr(cls, attr)
     if getattr(original, "_replai", False):
@@ -53,6 +55,9 @@ def _patch(cls, attr: str, name: str, extract, make_accum) -> None:
     if inspect.iscoroutinefunction(original):
         @functools.wraps(original)
         async def wrapper(self, *args, **kwargs):
+            played = _maybe_replay(name, kwargs, reconstruct)
+            if played is not _MISS:
+                return played
             start = time.time()
             resp = await original(self, *args, **kwargs)
             if kwargs.get("stream"):
@@ -62,6 +67,9 @@ def _patch(cls, attr: str, name: str, extract, make_accum) -> None:
     else:
         @functools.wraps(original)
         def wrapper(self, *args, **kwargs):
+            played = _maybe_replay(name, kwargs, reconstruct)
+            if played is not _MISS:
+                return played
             start = time.time()
             resp = original(self, *args, **kwargs)
             if kwargs.get("stream"):
@@ -71,6 +79,34 @@ def _patch(cls, attr: str, name: str, extract, make_accum) -> None:
 
     wrapper._replai = True
     setattr(cls, attr, wrapper)
+
+
+_MISS = object()
+
+
+def _maybe_replay(name: str, kwargs: dict, reconstruct):
+    """Return a played-back response under replay(), else the _MISS sentinel."""
+    action, rec = _ctx.replay_lookup(name, "llm_call")
+    if action == "run":
+        return _MISS
+    if action == "raise":
+        raise RuntimeError(
+            f"replay: no recorded response for llm_call '{name}'. "
+            f"Pass live={{'llm_call'}} to run it live."
+        )
+    raw = rec.get("raw")
+    if raw is None:
+        raise RuntimeError(
+            f"replay: recorded '{name}' has no raw response (streamed calls "
+            f"aren't replayable). Pass live={{'llm_call'}} to run it live."
+        )
+    _ctx.record_span(
+        name, "llm_call",
+        input=kwargs.get("messages"), output=rec.get("output"),
+        model=rec.get("model"), tokens_in=rec.get("tokens_in"),
+        tokens_out=rec.get("tokens_out"), raw=raw,
+    )
+    return reconstruct(raw)
 
 
 def _record(name: str, kwargs: dict, extract, resp, start=None) -> None:
@@ -84,9 +120,31 @@ def _record(name: str, kwargs: dict, extract, resp, start=None) -> None:
             model=kwargs.get("model"),
             tokens_in=tokens_in,
             tokens_out=tokens_out,
+            raw=_raw(resp),
         )
     except Exception:
         pass
+
+
+def _raw(resp):
+    """Serialize an SDK response (pydantic) so replay can reconstruct it."""
+    dump = getattr(resp, "model_dump", None)
+    if dump is None:
+        return None
+    try:
+        return dump(mode="json")
+    except Exception:
+        return None
+
+
+def _reconstruct_anthropic(raw):
+    from anthropic.types import Message
+    return Message.model_validate(raw)
+
+
+def _reconstruct_openai(raw):
+    from openai.types.chat import ChatCompletion
+    return ChatCompletion.model_validate(raw)
 
 
 # --- streaming -------------------------------------------------------------
