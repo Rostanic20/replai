@@ -46,6 +46,19 @@
        letter-spacing: .5px; }
   .pill { display: inline-block; background: var(--bg); border: 1px solid var(--line);
           border-radius: 4px; padding: 1px 7px; margin-right: 6px; font-size: 12px; }
+  .compbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px;
+             padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .compbar select { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+                    border-radius: 6px; padding: 5px 8px; font: inherit; }
+  .compbar .exit { color: var(--muted); margin-left: auto; text-decoration: none; }
+  .compbar .exit:hover { color: var(--err); }
+  .span .mark { width: 12px; flex: none; color: var(--muted); font-weight: 700; text-align: center; }
+  .span.diff.added { border-color: rgba(89,193,154,.5); }
+  .span.diff.removed { border-color: rgba(255,107,107,.5); opacity: .85; }
+  .span.diff.changed { border-color: rgba(214,151,90,.6); }
+  .span.diff.same { opacity: .5; }
+  .chg { font-size: 10px; background: rgba(214,151,90,.18); color: var(--fn); border-radius: 4px;
+         padding: 1px 6px; flex: none; text-transform: uppercase; letter-spacing: .5px; }
 </style>
 </head>
 <body>
@@ -56,10 +69,11 @@
   </div>
 <script>
 const $ = s => document.querySelector(s);
-let activeRun = null, activeSpan = null;
+let activeRun = null, activeSpan = null, runsCache = [];
 
 async function loadRuns() {
   const runs = await (await fetch('/api/runs')).json();
+  runsCache = runs;
   const el = $('#runs');
   if (!runs.length) { el.innerHTML = '<div class="empty">No runs yet.<br>Run your agent, then refresh.</div>'; return; }
   el.innerHTML = '';
@@ -79,11 +93,72 @@ async function loadRun(id) {
   const { spans } = await (await fetch('/api/runs/' + id)).json();
   const tl = $('#timeline');
   $('#detail').innerHTML = '<div class="empty">Select a step.</div>';
-  if (!spans.length) { tl.innerHTML = '<div class="empty">No steps recorded.</div>'; return; }
+  tl.innerHTML = '';
+  tl.appendChild(compareBar(id));
+  if (!spans.length) {
+    tl.insertAdjacentHTML('beforeend', '<div class="empty">No steps recorded.</div>');
+    return;
+  }
   const byParent = {};
   for (const s of spans) (byParent[s.parent_id] = byParent[s.parent_id] || []).push(s);
-  tl.innerHTML = '';
   render(byParent, null, 0, tl, spans);
+}
+
+function compareBar(id) {
+  const bar = document.createElement('div');
+  bar.className = 'compbar';
+  const others = runsCache.filter(r => r.id !== id);
+  const opts = ['<option value="">Compare with…</option>'].concat(
+    others.map(r => `<option value="${esc(r.id)}">${esc(r.name)} · ${esc(r.id)}</option>`)).join('');
+  bar.innerHTML = `<select>${opts}</select>`;
+  bar.querySelector('select').onchange = e => { if (e.target.value) loadDiff(id, e.target.value); };
+  return bar;
+}
+
+async function loadDiff(a, b) {
+  activeSpan = null;
+  const data = await (await fetch(`/api/diff?a=${a}&b=${b}`)).json();
+  const tl = $('#timeline');
+  tl.innerHTML = '';
+  $('#detail').innerHTML = '<div class="empty">Select a step.</div>';
+  const head = document.createElement('div');
+  head.className = 'compbar';
+  head.innerHTML = `<span class="pill">A ${esc(a)}</span><span class="pill">B ${esc(b)}</span>`
+    + `<a class="exit" href="#">✕ exit diff</a>`;
+  head.querySelector('.exit').onclick = e => { e.preventDefault(); loadRun(a); };
+  tl.appendChild(head);
+  const marks = { same: ' ', changed: '~', added: '+', removed: '-' };
+  for (const row of data.rows) {
+    const s = row.a || row.b;
+    const el = document.createElement('div');
+    el.className = 'span diff ' + row.status;
+    const chg = Object.keys(row.changes || {}).map(k => `<span class="chg">${esc(k)}</span>`).join('');
+    el.innerHTML = `<span class="mark">${marks[row.status]}</span>`
+      + `<span class="badge ${s.type}">${s.type.replace('_call','')}</span>`
+      + `<span class="label">${esc(s.name)}</span>${chg}`;
+    el.onclick = () => showDiffDetail(row, el);
+    tl.appendChild(el);
+  }
+  const sm = data.summary;
+  const sum = document.createElement('div');
+  sum.className = 'k';
+  sum.style.marginTop = '14px';
+  sum.textContent = `steps ${sm.a.steps}→${sm.b.steps} · in ${sm.a.tokens_in}→${sm.b.tokens_in}`
+    + ` · out ${sm.a.tokens_out}→${sm.b.tokens_out} · err ${sm.a.errors}→${sm.b.errors}`;
+  tl.appendChild(sum);
+}
+
+function showDiffDetail(row, el) {
+  document.querySelectorAll('.span.active').forEach(e => e.classList.remove('active'));
+  el.classList.add('active');
+  const side = (label, s) => s
+    ? `<div class="k">${label} · ${esc(s.name)}</div>`
+      + (s.model ? `<span class="pill">${esc(s.model)}</span>` : '')
+      + (s.tokens_out != null ? `<span class="pill">out ${s.tokens_out}</span>` : '')
+      + (s.error ? `<pre style="color:var(--err)">${esc(s.error)}</pre>` : '')
+      + `<pre>${esc(fmt(s.output))}</pre>`
+    : `<div class="k">${label}</div><div class="empty" style="padding:10px">— absent —</div>`;
+  $('#detail').innerHTML = side('A', row.a) + side('B', row.b);
 }
 
 function render(byParent, parent, depth, container, all) {
