@@ -16,6 +16,12 @@ def main(argv=None) -> None:
     ui.add_argument("--db", default=None)
 
     sub.add_parser("runs", help="List recorded runs")
+
+    diff = sub.add_parser("diff", help="Compare two runs step by step")
+    diff.add_argument("run_a")
+    diff.add_argument("run_b")
+    diff.add_argument("--db", default=None)
+
     sub.add_parser("version", help="Show the installed version")
 
     args = parser.parse_args(argv)
@@ -24,6 +30,8 @@ def main(argv=None) -> None:
         _launch_ui(args.host, args.port, args.db)
     elif args.command == "runs":
         _list_runs()
+    elif args.command == "diff":
+        _diff(args.run_a, args.run_b, args.db)
     elif args.command == "version":
         from . import __version__
         print(__version__)
@@ -52,6 +60,36 @@ def _list_runs() -> None:
         return
     for r in runs:
         print(f"{r['id']}  {r['name']:<24}  {_ago(r['start'])}")
+
+
+def _diff(run_a: str, run_b: str, db) -> None:
+    from .diff import diff_runs, summarize
+    from .store import Store
+    store = Store(db)
+    spans_a, spans_b = store.spans(run_a), store.spans(run_b)
+    if not spans_a and not store.run(run_a):
+        raise SystemExit(f"No run found: {run_a}")
+    if not spans_b and not store.run(run_b):
+        raise SystemExit(f"No run found: {run_b}")
+
+    sym = {"same": "  ", "changed": "~ ", "added": "+ ", "removed": "- "}
+    print(f"A {run_a}   B {run_b}\n")
+    for row in diff_runs(spans_a, spans_b):
+        span = row["a"] or row["b"]
+        print(f"{sym[row['status']]}{span['type']:<10} {span['name']}")
+        for field, (old, new) in row["changes"].items():
+            print(f"      {field}: {_short(old)} -> {_short(new)}")
+
+    sa, sb = summarize(spans_a), summarize(spans_b)
+    print(f"\n  steps {sa['steps']}->{sb['steps']}   "
+          f"tokens_in {sa['tokens_in']}->{sb['tokens_in']}   "
+          f"tokens_out {sa['tokens_out']}->{sb['tokens_out']}   "
+          f"errors {sa['errors']}->{sb['errors']}")
+
+
+def _short(value, limit: int = 60) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _ago(ts) -> str:
