@@ -4,9 +4,9 @@ See exactly what your agent did, step by step — then replay and diff runs.
 """
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import functools
+import inspect
 import time
 from typing import Any, Optional
 
@@ -74,7 +74,7 @@ def trace(fn=None, *, name: Optional[str] = None, type: str = "function"):
     def deco(f):
         span_name = name or getattr(f, "__name__", "fn")
 
-        if asyncio.iscoroutinefunction(f):
+        if inspect.iscoroutinefunction(f):
             @functools.wraps(f)
             async def awrapper(*args, **kwargs):
                 with span(span_name, type=type, input={"args": args, "kwargs": kwargs}) as s:

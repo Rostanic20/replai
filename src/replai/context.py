@@ -10,6 +10,7 @@ from .store import Store
 _store: Optional[Store] = None
 _current_run: contextvars.ContextVar = contextvars.ContextVar("replai_run", default=None)
 _span_stack: contextvars.ContextVar = contextvars.ContextVar("replai_span_stack", default=())
+_last_run: Optional[Run] = None  # cross-thread fallback (ContextVars don't cross threads)
 
 
 def set_store(store: Store) -> None:
@@ -29,6 +30,8 @@ def current_run() -> Optional[Run]:
 
 
 def enter_run(run: Run):
+    global _last_run
+    _last_run = run
     return _current_run.set(run)
 
 
@@ -38,10 +41,16 @@ def exit_run(token) -> None:
 
 def ensure_run() -> Run:
     run = current_run()
-    if run is None:
-        run = Run(name="auto")
-        get_store().save_run(run)
-        enter_run(run)
+    if run is not None:
+        return run
+    # No run in this context — e.g. a worker thread that didn't inherit the
+    # caller's ContextVars. Attach to the most recent still-open run rather
+    # than silently starting an orphan "auto" run.
+    if _last_run is not None and _last_run.end is None:
+        return _last_run
+    run = Run(name="auto")
+    get_store().save_run(run)
+    enter_run(run)
     return run
 
 
@@ -60,10 +69,15 @@ def pop_span() -> None:
         _span_stack.set(stack[:-1])
 
 
-def record_span(name: str, type: str, **fields) -> Span:
-    """Record an already-completed span (used for one-shot LLM/tool calls)."""
+def record_span(name: str, type: str, start: Optional[float] = None, **fields) -> Span:
+    """Record an already-completed span (used for one-shot LLM/tool calls).
+
+    Pass `start` to preserve the real call latency; otherwise duration is ~0.
+    """
     run = ensure_run()
     span = Span(run_id=run.id, name=name, type=type, parent_id=current_span_id(), **fields)
+    if start is not None:
+        span.start = start
     span.end = time.time()
     get_store().save_span(span)
     return span

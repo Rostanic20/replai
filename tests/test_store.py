@@ -1,4 +1,7 @@
+import threading
+
 import replai
+from replai.models import Run, Span
 from replai.store import Store
 
 
@@ -64,3 +67,40 @@ def test_record_llm_call(tmp_path):
     assert span["type"] == "llm_call"
     assert span["model"] == "m"
     assert span["tokens_out"] == 3
+
+
+def test_concurrent_writes(tmp_path):
+    db = str(tmp_path / "c.db")
+    store = Store(db)
+    run = Run(name="threads")
+    store.save_run(run)
+
+    def writer(n):
+        for i in range(20):
+            store.save_span(Span(run_id=run.id, name=f"{n}-{i}"))
+
+    threads = [threading.Thread(target=writer, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(store.spans(run.id)) == 160
+
+
+def test_span_in_worker_thread_attaches_to_open_run(tmp_path):
+    db = str(tmp_path / "wt.db")
+    replai.init(db=db, instrument=False)
+
+    with replai.run("main") as r:
+        def work():
+            with replai.span("threaded-tool", type="tool_call"):
+                pass
+        t = threading.Thread(target=work)
+        t.start()
+        t.join()
+
+    store = Store(db)
+    assert len(store.runs()) == 1  # no orphan "auto" run
+    spans = store.spans(r.id)
+    assert [s["name"] for s in spans] == ["threaded-tool"]
